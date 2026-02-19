@@ -11,7 +11,6 @@ import tempfile
 
 import boto3
 import sagemaker
-from sagemaker.base_predictor import Predictor
 from sagemaker.serializers import CSVSerializer
 from sagemaker.deserializers import JSONDeserializer
 from sagemaker.serializers import NumpySerializer
@@ -151,6 +150,7 @@ if submitted:
         display_explanation(input_df,session, aws_bucket)
     else:
         st.error(res)
+
 
 
 
