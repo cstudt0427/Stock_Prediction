@@ -140,17 +140,21 @@ with st.form("pred_form"):
 
 if submitted:
 
-    data_row = [user_inputs[k] for k in MODEL_INFO["keys"]]
-    # Prepare data
-    base_df = df_features
-    input_df = pd.concat([base_df, pd.DataFrame([data_row], columns=base_df.columns)])
-    
-    res, status = call_model_api(input_df)
+    # Build one-row dataframe with correct feature names
+    input_row_df = pd.DataFrame(
+        [[user_inputs[k] for k in MODEL_INFO["keys"]]],
+        columns=MODEL_INFO["keys"]
+    )
+
+    # Call SageMaker endpoint
+    res, status = call_model_api(input_row_df)
+
     if status == 200:
         st.metric("Prediction Result", res)
-        display_explanation(input_df,session, aws_bucket)
     else:
         st.error(res)
+
+
 
 
 
