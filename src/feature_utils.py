@@ -1,73 +1,53 @@
-import numpy as np
+# =========================
+# src/feature_utils.py
+# =========================
 import pandas as pd
-import datetime
-import yfinance as yf
-import pandas_datareader.data as web
+import numpy as np
 import requests
-#from datetime import datetime, timedelta
-import os
-import sys
 
-import os
-import sys
+# NOTE:
+# This file provides a lightweight way to fetch BTC close history at runtime
+# (so you do NOT need to commit BitstampData.csv to GitHub).
+# It uses CoinGecko's market_chart endpoint.
 
+def get_bitcoin_historical_prices(days: int = 365) -> pd.DataFrame:
+    """
+    Fetch historical BTC prices in USD from CoinGecko.
+    Returns a DataFrame with columns:
+      - Date (datetime)
+      - Close Price (USD) (float)
+    """
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+    params = {"vs_currency": "usd", "days": int(days)}
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
 
-# ... continue with your script ...
-
-def extract_features():
-
-    return_period = 5
-    
-    START_DATE = (datetime.date.today() - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
-    END_DATE = datetime.date.today().strftime("%Y-%m-%d")
-    stk_tickers = ['MSFT', 'IBM', 'GOOGL']
-    ccy_tickers = ['DEXJPUS', 'DEXUSUK']
-    idx_tickers = ['SP500', 'DJIA', 'VIXCLS']
-    
-    stk_data = yf.download(stk_tickers, start=START_DATE, end=END_DATE, auto_adjust=False)
-    #stk_data = web.DataReader(stk_tickers, 'yahoo')
-    ccy_data = web.DataReader(ccy_tickers, 'fred', start=START_DATE, end=END_DATE)
-    idx_data = web.DataReader(idx_tickers, 'fred', start=START_DATE, end=END_DATE)
-
-    Y = np.log(stk_data.loc[:, ('Adj Close', 'MSFT')]).diff(return_period).shift(-return_period)
-    Y.name = Y.name[-1]+'_Future'
-    
-    X1 = np.log(stk_data.loc[:, ('Adj Close', ('GOOGL', 'IBM'))]).diff(return_period)
-    X1.columns = X1.columns.droplevel()
-    X2 = np.log(ccy_data).diff(return_period)
-    X3 = np.log(idx_data).diff(return_period)
-
-    X = pd.concat([X1, X2, X3], axis=1)
-    
-    dataset = pd.concat([Y, X], axis=1).dropna().iloc[::return_period, :]
-    Y = dataset.loc[:, Y.name]
-    X = dataset.loc[:, X.columns]
-    dataset.index.name = 'Date'
-    #dataset.to_csv(r"./test_data.csv")
-    features = dataset.sort_index()
-    features = features.reset_index(drop=True)
-    features = features.iloc[:,1:]
-    return features
-
-
-def get_bitcoin_historical_prices(days = 60):
-    
-    BASE_URL = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-    
-    params = {
-        'vs_currency': 'usd',
-        'days': days,
-        'interval': 'daily' # Ensure we get daily granularity
-    }
-    response = requests.get(BASE_URL, params=params)
     data = response.json()
-    prices = data['prices']
-    df = pd.DataFrame(prices, columns=['Timestamp', 'Close Price (USD)'])
-    df['Date'] = pd.to_datetime(df['Timestamp'], unit='ms').dt.normalize()
-    df = df[['Date', 'Close Price (USD)']].set_index('Date')
-    return df
+    prices = data.get("prices", [])
+    if not prices:
+        raise ValueError("No 'prices' returned from CoinGecko response.")
 
+    df = pd.DataFrame(prices, columns=["timestamp", "Close Price (USD)"])
+    df["Date"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df = df.drop(columns=["timestamp"])
+    df["Close Price (USD)"] = pd.to_numeric(df["Close Price (USD)"], errors="coerce")
+    df = df.dropna().sort_values("Date").reset_index(drop=True)
+    return df[["Date", "Close Price (USD)"]]
 
+def get_bitcoin_close_history(days: int = 365, tail_n: int = 300) -> pd.DataFrame:
+    """
+    Returns a DataFrame with a single column 'Close' containing a recent history window.
+    This is designed to match HW3 pipelines that compute rolling/EMA indicators internally.
+    """
+    df = get_bitcoin_historical_prices(days=days).copy()
+    df = df.rename(columns={"Close Price (USD)": "Close"})
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    df = df.dropna()
 
+    if tail_n is not None:
+        df = df.tail(int(tail_n))
+
+    df = df.reset_index(drop=True)
+    return df[["Close"]]
 
 
