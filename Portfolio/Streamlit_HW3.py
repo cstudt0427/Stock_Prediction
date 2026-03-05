@@ -14,6 +14,19 @@ st.set_page_config(page_title="Bitcoin Signal Predictor", layout="wide")
 st.title("₿ Bitcoin Buy / Hold / Sell (SageMaker Endpoint)")
 
 # ---------------------------
+# Make sure repo root is on path so we can import src/*
+# (Streamlit Cloud runs from repo root, but this makes it robust)
+# ---------------------------
+current_dir = os.path.dirname(os.path.abspath(__file__))
+repo_root = os.path.abspath(os.path.join(current_dir, ".."))
+if repo_root not in sys.path:
+    sys.path.append(repo_root)
+
+# Import the SAME FeatureEngineer used in the notebook training
+# Ensure your repo has: src/Custom_Classes.py
+from src.Custom_Classes import FeatureEngineer
+
+# ---------------------------
 # Secrets (Streamlit Cloud)
 # ---------------------------
 aws_id = st.secrets["aws_credentials"]["AWS_ACCESS_KEY_ID"]
@@ -39,7 +52,7 @@ sm_session = get_sm_session(aws_id, aws_secret, aws_token, aws_region)
 
 @st.cache_resource
 def get_predictor(endpoint_name: str):
-    # Use CSV to match SageMaker input_fn path: text/csv -> pd.read_csv(...)
+    # CSV is most reliable with typical SageMaker input_fn parsing
     return Predictor(
         endpoint_name=endpoint_name,
         sagemaker_session=sm_session,
@@ -62,22 +75,12 @@ with st.form("pred_form"):
             min_value=0.0,
             value=50000.0,
             step=10.0,
-            help="BTC close price used by the model input."
+            help="BTC Close price used to compute technical features."
         )
 
     with col2:
-        st.caption("If your trained pipeline expects ONLY Close, leave the other fields blank.")
-        include_ohlcv = st.checkbox("Send OHLCV (only if your model expects it)", value=False)
-
-    open_p = high = low = vol_btc = None
-    if include_ohlcv:
-        c3, c4 = st.columns(2)
-        with c3:
-            open_p = st.number_input("Open", min_value=0.0, value=float(close), step=10.0)
-            high = st.number_input("High", min_value=0.0, value=float(close), step=10.0)
-        with c4:
-            low = st.number_input("Low", min_value=0.0, value=float(close), step=10.0)
-            vol_btc = st.number_input("Volume_(BTC)", min_value=0.0, value=0.0, step=0.01)
+        st.caption("This app computes the same engineered features used during training.")
+        show_debug = st.checkbox("Show debug tables", value=True)
 
     submitted = st.form_submit_button("Run Prediction")
 
@@ -94,7 +97,6 @@ def normalize_prediction(raw):
       - "0" or "0.0"
     Returns an int label if possible; otherwise None.
     """
-    # dict -> take predictions field or first value
     if isinstance(raw, dict):
         if "predictions" in raw:
             raw = raw["predictions"]
@@ -103,7 +105,6 @@ def normalize_prediction(raw):
         else:
             raw = list(raw.values())[0]
 
-    # list -> scalar
     if isinstance(raw, list):
         if len(raw) == 0:
             return None
@@ -113,11 +114,9 @@ def normalize_prediction(raw):
         else:
             raw = first
 
-    # bytes -> decode
     if isinstance(raw, (bytes, bytearray)):
         raw = raw.decode("utf-8", errors="ignore")
 
-    # string -> float -> int
     try:
         return int(round(float(raw)))
     except Exception:
@@ -127,23 +126,26 @@ def normalize_prediction(raw):
 # Run prediction
 # ---------------------------
 if submitted:
-    # Build a one-row dataframe with expected column names.
-    payload = {"Close": float(close)}
-    if include_ohlcv:
-        payload.update({
-            "Open": float(open_p),
-            "High": float(high),
-            "Low": float(low),
-            "Volume_(BTC)": float(vol_btc)
-        })
-
-    input_df = pd.DataFrame([payload])
-
-    with st.expander("Debug: Payload sent to endpoint"):
-        st.dataframe(input_df)
-
     try:
-        # With CSVSerializer, sending a DataFrame yields a CSV body with header.
+        # 1) Create raw input row
+        raw_df = pd.DataFrame({"Close": [float(close)]})
+
+        # 2) Compute engineered features exactly like notebook training
+        fe = FeatureEngineer(windows=[5])
+        features_np = fe.transform(raw_df[["Close"]])
+
+        # 3) Convert to DataFrame with stable names
+        input_df = pd.DataFrame(
+            features_np,
+            columns=[f"feat_{i}" for i in range(features_np.shape[1])]
+        )
+
+        # Optional debug views
+        if show_debug:
+            st.subheader("Debug: Feature row sent to endpoint")
+            st.dataframe(input_df)
+
+        # 4) Call endpoint
         raw_pred = predictor.predict(input_df)
         pred_label = normalize_prediction(raw_pred)
 
@@ -151,9 +153,7 @@ if submitted:
             st.error(f"Could not parse prediction output: {raw_pred}")
         else:
             st.success(f"Prediction: **{LABEL_MAP.get(pred_label, str(pred_label))}** (raw={pred_label})")
-            st.write("Model input row:")
-            st.dataframe(input_df)
 
     except Exception as e:
         st.error(f"Endpoint invocation failed: {e}")
-        st.info("Verify AWS secrets/region/endpoint name and that your input columns match the model’s training inputs.")
+        st.info("Most common causes: endpoint expects different feature columns, or FeatureEngineer differs from training.")
