@@ -1,4 +1,4 @@
-import os, sys, warnings
+import os, warnings
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -14,20 +14,7 @@ st.set_page_config(page_title="Bitcoin Signal Predictor", layout="wide")
 st.title("₿ Bitcoin Buy / Hold / Sell (SageMaker Endpoint)")
 
 # ---------------------------
-# Make sure repo root is on path so we can import src/*
-# (Streamlit Cloud runs from repo root, but this makes it robust)
-# ---------------------------
-current_dir = os.path.dirname(os.path.abspath(__file__))
-repo_root = os.path.abspath(os.path.join(current_dir, ".."))
-if repo_root not in sys.path:
-    sys.path.append(repo_root)
-
-# Import the SAME FeatureEngineer used in the notebook training
-# Ensure your repo has: src/Custom_Classes.py
-from src.Custom_Classes import FeatureEngineer
-
-# ---------------------------
-# Secrets (Streamlit Cloud)
+# Secrets
 # ---------------------------
 aws_id = st.secrets["aws_credentials"]["AWS_ACCESS_KEY_ID"]
 aws_secret = st.secrets["aws_credentials"]["AWS_SECRET_ACCESS_KEY"]
@@ -39,7 +26,7 @@ aws_endpoint = st.secrets["aws_credentials"]["AWS_ENDPOINT"]
 # AWS Session
 # ---------------------------
 @st.cache_resource
-def get_sm_session(_aws_id, _aws_secret, _aws_token, _aws_region):
+def get_sm_session(_aws_id,_aws_secret,_aws_token,_aws_region):
     session = boto3.Session(
         aws_access_key_id=_aws_id,
         aws_secret_access_key=_aws_secret,
@@ -48,11 +35,10 @@ def get_sm_session(_aws_id, _aws_secret, _aws_token, _aws_region):
     )
     return sagemaker.Session(boto_session=session)
 
-sm_session = get_sm_session(aws_id, aws_secret, aws_token, aws_region)
+sm_session = get_sm_session(aws_id,aws_secret,aws_token,aws_region)
 
 @st.cache_resource
-def get_predictor(endpoint_name: str):
-    # CSV is most reliable with typical SageMaker input_fn parsing
+def get_predictor(endpoint_name:str):
     return Predictor(
         endpoint_name=endpoint_name,
         sagemaker_session=sm_session,
@@ -63,97 +49,90 @@ def get_predictor(endpoint_name: str):
 predictor = get_predictor(aws_endpoint)
 
 # ---------------------------
+# Load BTC history
+# ---------------------------
+DATA_PATH = "BitstampData.csv"
+
+@st.cache_data
+def load_history():
+    df = pd.read_csv(DATA_PATH)
+    df = df[["Close"]]
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    df = df.dropna()
+    return df
+
+# ---------------------------
 # UI
 # ---------------------------
-with st.form("pred_form"):
+with st.form("prediction_form"):
+
     st.subheader("Inputs")
-    col1, col2 = st.columns(2)
 
-    with col1:
-        close = st.number_input(
-            "Close",
-            min_value=0.0,
-            value=50000.0,
-            step=10.0,
-            help="BTC Close price used to compute technical features."
-        )
+    close_price = st.number_input(
+        "Close",
+        min_value=0.0,
+        value=50000.0,
+        step=10.0
+    )
 
-    with col2:
-        st.caption("This app computes the same engineered features used during training.")
-        show_debug = st.checkbox("Show debug tables", value=True)
+    show_debug = st.checkbox("Show debug tables", value=True)
 
     submitted = st.form_submit_button("Run Prediction")
 
 # ---------------------------
-# Prediction helpers
+# Prediction helper
 # ---------------------------
-LABEL_MAP = {-1: "Sell", 0: "Hold", 1: "Buy"}
+LABEL_MAP = {
+    -1:"Sell",
+    0:"Hold",
+    1:"Buy"
+}
 
-def normalize_prediction(raw):
-    """
-    Handles common SageMaker output formats:
-      - {"predictions":[...]} or {"prediction": ...}
-      - [x] or [[x]]
-      - "0" or "0.0"
-    Returns an int label if possible; otherwise None.
-    """
+def extract_prediction(raw):
+
     if isinstance(raw, dict):
         if "predictions" in raw:
             raw = raw["predictions"]
-        elif "prediction" in raw:
-            raw = raw["prediction"]
-        else:
-            raw = list(raw.values())[0]
 
     if isinstance(raw, list):
-        if len(raw) == 0:
-            return None
-        first = raw[0]
-        if isinstance(first, list) and len(first) > 0:
-            raw = first[0]
-        else:
-            raw = first
-
-    if isinstance(raw, (bytes, bytearray)):
-        raw = raw.decode("utf-8", errors="ignore")
+        raw = raw[-1]
 
     try:
         return int(round(float(raw)))
-    except Exception:
+    except:
         return None
 
 # ---------------------------
 # Run prediction
 # ---------------------------
 if submitted:
+
     try:
-        # 1) Create raw input row
-        raw_df = pd.DataFrame({"Close": [float(close)]})
 
-        # 2) Compute engineered features exactly like notebook training
-        fe = FeatureEngineer(windows=[5])
-        features_np = fe.transform(raw_df[["Close"]])
+        history = load_history()
 
-        # 3) Convert to DataFrame with stable names
-        input_df = pd.DataFrame(
-            features_np,
-            columns=[f"feat_{i}" for i in range(features_np.shape[1])]
-        )
+        # take recent window
+        history = history.tail(300)
 
-        # Optional debug views
+        # append user price
+        new_row = pd.DataFrame({"Close":[float(close_price)]})
+
+        input_df = pd.concat([history,new_row],ignore_index=True)
+
         if show_debug:
-            st.subheader("Debug: Feature row sent to endpoint")
-            st.dataframe(input_df)
+            st.write("Data sent to endpoint:")
+            st.dataframe(input_df.tail(10))
 
-        # 4) Call endpoint
         raw_pred = predictor.predict(input_df)
-        pred_label = normalize_prediction(raw_pred)
 
-        if pred_label is None:
-            st.error(f"Could not parse prediction output: {raw_pred}")
+        pred = extract_prediction(raw_pred)
+
+        if pred is None:
+            st.error(f"Could not parse prediction: {raw_pred}")
         else:
-            st.success(f"Prediction: **{LABEL_MAP.get(pred_label, str(pred_label))}** (raw={pred_label})")
+            st.success(f"Prediction: **{LABEL_MAP.get(pred,str(pred))}**")
 
     except Exception as e:
+
         st.error(f"Endpoint invocation failed: {e}")
-        st.info("Most common causes: endpoint expects different feature columns, or FeatureEngineer differs from training.")
+        st.info("Check that BitstampData.csv exists in the repo and the endpoint name is correct.")
