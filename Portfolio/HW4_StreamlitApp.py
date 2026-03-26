@@ -22,12 +22,12 @@ import shap
 # ── Setup ─────────────────────────────────────────────────────────────────────
 warnings.simplefilter("ignore")
 
-current_dir  = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(current_dir, ".."))
-if project_root not in sys.path:
-    sys.path.append(project_root)
+# On Streamlit Cloud, feature_utils.py lives in the same folder as this app
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 
-from src.feature_utils import extract_features_pair
+from feature_utils import extract_features_pair
 
 # ── AWS Credentials from Streamlit Secrets ────────────────────────────────────
 # secrets.toml structure:
