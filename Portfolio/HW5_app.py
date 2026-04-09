@@ -81,6 +81,32 @@ def load_shap_explainer(_session, bucket):
     with open(local_path, "rb") as f:
         return shap.Explainer.load(f)
 
+def get_dataset(aws_bucket):
+    s3_client = session.client('s3')
+    local_csv = os.path.join(tempfile.gettempdir(), 'SP500Data.csv')
+    if not os.path.exists(local_csv):
+        s3_client.download_file(Bucket=aws_bucket, Key='SP500Data.csv', Filename=local_csv)
+    return pd.read_csv(local_csv, index_col=0)
+
+def get_closest_row(dataset, user_inputs):
+    target        = 'GOOGL'
+    return_period = 5
+    SP500_1 = 'IBM_CR_Cum'
+    SP500_2 = 'JPM_CR_Cum'
+
+    X = np.log(dataset.drop([target], axis=1)).diff(return_period)
+    X = np.exp(X).cumsum()
+    X.columns = [name + "_CR_Cum" for name in X.columns]
+
+    distances = np.sqrt(
+        (X[SP500_1] - user_inputs[SP500_1]) ** 2 +
+        (X[SP500_2] - user_inputs[SP500_2]) ** 2
+    )
+    closest_row = X.loc[[distances.idxmin()]].copy()
+    closest_row[SP500_1] = user_inputs[SP500_1]
+    closest_row[SP500_2] = user_inputs[SP500_2]
+    return closest_row
+
 def call_endpoint(user_inputs: dict):
     predictor = Predictor(
         endpoint_name=MODEL_INFO["endpoint"],
@@ -98,45 +124,21 @@ def call_endpoint(user_inputs: dict):
 def display_explanation(user_inputs: dict):
     best_pipeline = load_pipeline(session, aws_bucket)
     explainer     = load_shap_explainer(session, aws_bucket)
+    dataset       = get_dataset(aws_bucket)
+    closest_row   = get_closest_row(dataset, user_inputs)
 
-    # Download SP500Data.csv from S3 — not available locally on Streamlit Cloud
-    s3_client = session.client('s3')
-    local_csv = os.path.join(tempfile.gettempdir(), 'SP500Data.csv')
-    if not os.path.exists(local_csv):
-        s3_client.download_file(
-            Bucket=aws_bucket,
-            Key='SP500Data.csv',
-            Filename=local_csv
-        )
-    dataset = pd.read_csv(local_csv, index_col=0)
-
-    target        = 'GOOGL'
-    return_period = 5
-    SP500_1 = 'IBM_CR_Cum'
-    SP500_2 = 'JPM_CR_Cum'
-
-    X = np.log(dataset.drop([target], axis=1)).diff(return_period)
-    X = np.exp(X).cumsum()
-    X.columns = [name + "_CR_Cum" for name in X.columns]
-
-    distances = np.sqrt(
-        (X[SP500_1] - user_inputs[SP500_1]) ** 2 +
-        (X[SP500_2] - user_inputs[SP500_2]) ** 2
-    )
-    closest_row = X.loc[[distances.idxmin()]].copy()
-    closest_row[SP500_1] = user_inputs[SP500_1]
-    closest_row[SP500_2] = user_inputs[SP500_2]
-
-    preprocessing_pipeline = Pipeline(steps=best_pipeline.steps[:-1])
-    transformed = preprocessing_pipeline.transform(closest_row)
-    feature_names = [f"kpca_{i}" for i in range(transformed.shape[1])]
+    # Transform through imputer + scaler only (steps 0 and 1)
+    # This gives named stock features instead of anonymous kpca components
+    preprocessing_pipeline = Pipeline(steps=best_pipeline.steps[0:2])
+    transformed  = preprocessing_pipeline.transform(closest_row)
+    feature_names = list(closest_row.columns)
     transformed_df = pd.DataFrame(transformed, columns=feature_names)
 
     shap_values = explainer(transformed_df)
 
     st.subheader("Decision Transparency (SHAP)")
-    fig, ax = plt.subplots(figsize=(10, 4))
-    shap.plots.waterfall(shap_values[0], max_display=10, show=False)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    shap.plots.waterfall(shap_values[0], max_display=15, show=False)
     st.pyplot(fig)
 
     top_feature = pd.Series(
