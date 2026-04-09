@@ -3,11 +3,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
-import posixpath
+import tempfile
 import json
+
 import joblib
 import tarfile
-import tempfile
 
 import boto3
 import sagemaker
@@ -19,7 +19,7 @@ import shap
 
 warnings.simplefilter("ignore")
 
-# ── Path setup so 'src' is importable on Streamlit Cloud ─────────────────────
+# ── Path setup ────────────────────────────────────────────────────────────────
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 if project_root not in sys.path:
@@ -51,7 +51,7 @@ MODEL_INFO = {
     "explainer": "explainer_pca.shap",
     "pipeline":  "finalized_pca_model.tar.gz",
     "inputs": [
-        {"name": "IBM_CR_Cum",  "min": -100.0, "max": 100.0, "default": 0.0, "step": 0.5},
+        {"name": "IBM_CR_Cum", "min": -100.0, "max": 100.0, "default": 0.0, "step": 0.5},
         {"name": "JPM_CR_Cum", "min": -100.0, "max": 100.0, "default": 0.0, "step": 0.5},
     ]
 }
@@ -61,15 +61,12 @@ MODEL_INFO = {
 def load_pipeline(_session, bucket):
     s3_client = _session.client('s3')
     filename  = MODEL_INFO["pipeline"]
-    s3_client.download_file(
-        Bucket=bucket,
-        Key=f"sklearn-pipeline-deployment/{filename}",
-        Filename=filename
-    )
-    with tarfile.open(filename, "r:gz") as tar:
-        tar.extractall(path=".")
+    local     = os.path.join(tempfile.gettempdir(), filename)
+    s3_client.download_file(Bucket=bucket, Key=f"sklearn-pipeline-deployment/{filename}", Filename=local)
+    with tarfile.open(local, "r:gz") as tar:
+        tar.extractall(path=tempfile.gettempdir())
         joblib_file = [f for f in tar.getnames() if f.endswith('.joblib')][0]
-    return joblib.load(joblib_file)
+    return joblib.load(os.path.join(tempfile.gettempdir(), joblib_file))
 
 @st.cache_resource
 def load_shap_explainer(_session, bucket):
@@ -92,7 +89,7 @@ def call_endpoint(user_inputs: dict):
         deserializer=NumpyDeserializer()
     )
     try:
-        raw = predictor.predict(user_inputs)
+        raw      = predictor.predict(user_inputs)
         pred_val = float(pd.DataFrame(raw).values[-1][0])
         return round(pred_val, 6), 200
     except Exception as e:
@@ -102,11 +99,16 @@ def display_explanation(user_inputs: dict):
     best_pipeline = load_pipeline(session, aws_bucket)
     explainer     = load_shap_explainer(session, aws_bucket)
 
-    # Load the full dataset to find the closest matching row (same as inference_pca.py)
-    current_dir  = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(current_dir, '..'))
-    file_path    = os.path.join(project_root, 'Portfolio/SP500Data.csv')
-    dataset      = pd.read_csv(file_path, index_col=0)
+    # Download SP500Data.csv from S3 — not available locally on Streamlit Cloud
+    s3_client = session.client('s3')
+    local_csv = os.path.join(tempfile.gettempdir(), 'SP500Data.csv')
+    if not os.path.exists(local_csv):
+        s3_client.download_file(
+            Bucket=aws_bucket,
+            Key='SP500Data.csv',
+            Filename=local_csv
+        )
+    dataset = pd.read_csv(local_csv, index_col=0)
 
     target        = 'GOOGL'
     return_period = 5
@@ -125,7 +127,6 @@ def display_explanation(user_inputs: dict):
     closest_row[SP500_1] = user_inputs[SP500_1]
     closest_row[SP500_2] = user_inputs[SP500_2]
 
-    # Now transform the full row through preprocessing steps only
     preprocessing_pipeline = Pipeline(steps=best_pipeline.steps[:-1])
     transformed = preprocessing_pipeline.transform(closest_row)
     feature_names = [f"kpca_{i}" for i in range(transformed.shape[1])]
