@@ -163,9 +163,3 @@ if submitted:
 
 st.markdown("---")
 st.caption("HW5 - Dimensionality Reduction - Option 1 - GOOGL Return Prediction via KernelPCA + Lasso")
-
-    except Exception as e:
-        st.error(f"Error invoking endpoint: {e}")
-
-st.markdown("---")
-st.caption("HW5 - Dimensionality Reduction - Option 1 - GOOGL Return Prediction via KernelPCA + Lasso")
