@@ -102,15 +102,36 @@ def display_explanation(user_inputs: dict):
     best_pipeline = load_pipeline(session, aws_bucket)
     explainer     = load_shap_explainer(session, aws_bucket)
 
-    # Replicate feature engineering: find closest row using both inputs
-    preprocessing_pipeline = Pipeline(steps=best_pipeline.steps[0:2])
+    # Load the full dataset to find the closest matching row (same as inference_pca.py)
+    current_dir  = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_dir, '..'))
+    file_path    = os.path.join(project_root, 'Portfolio/SP500Data.csv')
+    dataset      = pd.read_csv(file_path, index_col=0)
 
-    input_df = pd.DataFrame([user_inputs])
-    input_df_transformed = preprocessing_pipeline.transform(input_df)
-    feature_names = best_pipeline[0:2].get_feature_names_out()
-    input_df_transformed = pd.DataFrame(input_df_transformed, columns=feature_names)
+    target        = 'GOOGL'
+    return_period = 5
+    SP500_1 = 'IBM_CR_Cum'
+    SP500_2 = 'JPM_CR_Cum'
 
-    shap_values = explainer(input_df_transformed)
+    X = np.log(dataset.drop([target], axis=1)).diff(return_period)
+    X = np.exp(X).cumsum()
+    X.columns = [name + "_CR_Cum" for name in X.columns]
+
+    distances = np.sqrt(
+        (X[SP500_1] - user_inputs[SP500_1]) ** 2 +
+        (X[SP500_2] - user_inputs[SP500_2]) ** 2
+    )
+    closest_row = X.loc[[distances.idxmin()]].copy()
+    closest_row[SP500_1] = user_inputs[SP500_1]
+    closest_row[SP500_2] = user_inputs[SP500_2]
+
+    # Now transform the full row through preprocessing steps only
+    preprocessing_pipeline = Pipeline(steps=best_pipeline.steps[:-1])
+    transformed = preprocessing_pipeline.transform(closest_row)
+    feature_names = [f"kpca_{i}" for i in range(transformed.shape[1])]
+    transformed_df = pd.DataFrame(transformed, columns=feature_names)
+
+    shap_values = explainer(transformed_df)
 
     st.subheader("Decision Transparency (SHAP)")
     fig, ax = plt.subplots(figsize=(10, 4))
