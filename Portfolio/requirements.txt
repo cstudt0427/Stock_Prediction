@@ -7,5 +7,5 @@ xgboost
 imbalanced-learn
 shap
 boto3
-sagemaker
+sagemaker>=2.197,<3.0.0
 joblib
